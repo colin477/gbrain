@@ -231,6 +231,9 @@ export function isSyncable(path: string, opts: SyncableOptions = {}): boolean {
   // Skip ops/ directory
   if (path.startsWith('ops/')) return false;
 
+  // Skip templates/ — Obsidian Templater syntax (<% ... %>) is not valid YAML
+  if (path.startsWith('templates/')) return false;
+
   if (opts.include && opts.include.length > 0 && !matchesAnyGlob(path, opts.include)) return false;
   if (opts.exclude && opts.exclude.length > 0 && matchesAnyGlob(path, opts.exclude)) return false;
 

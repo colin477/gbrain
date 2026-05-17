@@ -38,3 +38,7 @@ export/
 # Tier 3 PGLite snapshot fixture (built on demand by build:pglite-snapshot)
 test/fixtures/pglite-snapshot.tar
 test/fixtures/pglite-snapshot.version
+
+# One-off backfill scripts may dump per-brain CSV artifacts (personal data,
+# unresolved display names, etc.). Brain-local, reproducible — never commit.
+scripts/frontmatter-backfill-namematch-deferred.csv

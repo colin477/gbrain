@@ -81,7 +81,11 @@ CREATE TABLE IF NOT EXISTS pages (
   effective_date_source TEXT,
   import_filename       TEXT,
   salience_touched_at   TIMESTAMPTZ,
-  CONSTRAINT pages_source_slug_key UNIQUE (source_id, slug)
+  CONSTRAINT pages_source_slug_key UNIQUE (source_id, slug),
+  -- Project-mgmt durability (Tier B, 2026-06-01): a page typed 'project' MUST
+  -- live under projects/. Inverse invariant only (type=>slug); see src/schema.sql.
+  CONSTRAINT pages_project_namespace_chk
+    CHECK (type <> 'project' OR slug LIKE 'projects/%')
 );
 
 CREATE INDEX IF NOT EXISTS idx_pages_type ON pages(type);

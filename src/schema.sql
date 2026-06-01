@@ -99,7 +99,15 @@ CREATE TABLE IF NOT EXISTS pages (
   effective_date_source TEXT,
   import_filename       TEXT,
   salience_touched_at   TIMESTAMPTZ,
-  CONSTRAINT pages_source_slug_key UNIQUE (source_id, slug)
+  CONSTRAINT pages_source_slug_key UNIQUE (source_id, slug),
+  -- Project-mgmt durability (Tier B, 2026-06-01): universal write gate for the
+  -- projects/ namespace. A page typed 'project' MUST live under projects/.
+  -- This is the inverse invariant (type=>slug, NOT slug=>type): the projects/
+  -- slug-space holds 200+ legitimately non-project pages (re-typed docs/launchd/
+  -- concepts), so the slug=>type direction is intentionally NOT enforced. Catches
+  -- every write path (CLI, import, n8n) that the PAI-side MCP hook cannot see.
+  CONSTRAINT pages_project_namespace_chk
+    CHECK (type <> 'project' OR slug LIKE 'projects/%')
 );
 
 CREATE INDEX IF NOT EXISTS idx_pages_type ON pages(type);

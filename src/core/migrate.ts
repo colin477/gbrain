@@ -3546,6 +3546,52 @@ export const MIGRATIONS: Migration[] = [
       `,
     },
   },
+  {
+    version: 75,
+    name: 'pages_project_namespace_check',
+    // Project-mgmt durability (Tier B, 2026-06-01): universal write gate for the
+    // projects/ namespace. A page typed 'project' MUST live under projects/.
+    // Inverse invariant only (type=>slug, NOT slug=>type): the projects/ slug-
+    // space holds 200+ legitimately non-project pages (re-typed docs/launchd/
+    // concepts), so slug=>type is intentionally NOT enforced. Catches every
+    // write path (CLI, import, n8n) the PAI-side MCP hook cannot see.
+    //
+    // Live Supabase already has this constraint (applied + VALIDATEd manually
+    // 2026-06-01); the pg_constraint guard makes this migration a no-op there.
+    // Also in src/schema.sql + pglite-schema.ts so fresh installs get it natively.
+    //
+    // ADD CONSTRAINT is not natively idempotent, so guard on pg_constraint.
+    // NOT VALID: enforces all NEW writes without taking the validating
+    // ACCESS-EXCLUSIVE scan lock on existing installs (preflight showed 0
+    // violations, so the rows are already clean).
+    idempotent: true,
+    sql: `
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'pages_project_namespace_chk'
+        ) THEN
+          ALTER TABLE pages
+            ADD CONSTRAINT pages_project_namespace_chk
+            CHECK (type <> 'project' OR slug LIKE 'projects/%') NOT VALID;
+        END IF;
+      END $$;
+    `,
+    sqlFor: {
+      pglite: `
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'pages_project_namespace_chk'
+          ) THEN
+            ALTER TABLE pages
+              ADD CONSTRAINT pages_project_namespace_chk
+              CHECK (type <> 'project' OR slug LIKE 'projects/%') NOT VALID;
+          END IF;
+        END $$;
+      `,
+    },
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS.length > 0

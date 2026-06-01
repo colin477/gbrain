@@ -3455,6 +3455,23 @@ export class PostgresEngine implements BrainEngine {
         (SELECT count(*) FROM pages p
          WHERE NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id)
            AND NOT EXISTS (SELECT 1 FROM links l WHERE l.from_page_id = p.id)
+           -- Orphan-metric exclusions — RESTORED 2026-06-01 after the v0.36.3
+           -- upgrade merge reverted them (commits 6a945560/54d349a1/a70ef64b;
+           -- upstream PR #1107 still OPEN). Bulk/leaf ingestions are anchored by
+           -- timeline/parent records, not wikilinks — counting them as orphans
+           -- makes brain_score reflect ingestion-by-design, not real graph rot.
+           -- calendar/ added (new calendar-day sync; leaf like 0-daily).
+           -- NOT excluding 3-resources/: it holds genuine knowledge (concepts,
+           -- companies, books) alongside ~1,023 contact stubs; the stubs are real
+           -- linkable debt to fix via hub backfill, not to hide via the metric.
+           AND p.deleted_at IS NULL
+           AND p.slug NOT LIKE 'emails/%'
+           AND p.slug NOT LIKE 'attachments/%'
+           AND p.slug NOT LIKE '0-daily/%'
+           AND p.slug NOT LIKE '4-archive/%'
+           AND p.slug NOT LIKE 'calendar/%'
+           AND p.slug NOT LIKE 'templates/%'
+           AND p.slug NOT LIKE 'navigation/%'
         ) as orphan_pages,
         (SELECT count(*) FROM links l
          WHERE NOT EXISTS (SELECT 1 FROM pages p WHERE p.id = l.to_page_id)

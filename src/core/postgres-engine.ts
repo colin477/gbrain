@@ -3501,17 +3501,22 @@ export class PostgresEngine implements BrainEngine {
     const orphanPages = Number(h.orphan_pages);
     const deadLinks = Number(h.dead_links);
     const linkCount = Number(h.link_count);
-    const pagesWithTimeline = Number(h.pages_with_timeline);
 
     // brain_score: 0-100 weighted average
     const linkDensity = pageCount > 0 ? Math.min(linkCount / pageCount, 1) : 0;
-    const timelineCoverageWhole = pageCount > 0 ? Math.min(pagesWithTimeline / pageCount, 1) : 0;
+    // Timeline subscore uses the entity_pages-based ratio the SQL already
+    // computes (pages_with_timeline_on_entities / entity_pages), NOT
+    // pages_with_timeline / total pageCount. The total-page denominator diluted
+    // the score ~4-5x — daily notes, attachments, and email ingestion are not
+    // timeline-bearing entities — capping timeline near 0/15 on any real brain.
+    // Mirrors link_coverage, which is already entity-based.
+    const timelineCoverage = Math.min(Number(h.timeline_coverage), 1);
     const noOrphans = pageCount > 0 ? 1 - (orphanPages / pageCount) : 1;
     const noDeadLinks = pageCount > 0 ? 1 - Math.min(deadLinks / pageCount, 1) : 1;
     // Per-component points. Sum equals brainScore by construction.
     const embedCoverageScore = pageCount === 0 ? 0 : Math.round(embedCoverage * 35);
     const linkDensityScore = pageCount === 0 ? 0 : Math.round(linkDensity * 25);
-    const timelineCoverageScore = pageCount === 0 ? 0 : Math.round(timelineCoverageWhole * 15);
+    const timelineCoverageScore = pageCount === 0 ? 0 : Math.round(timelineCoverage * 15);
     const noOrphansScore = pageCount === 0 ? 0 : Math.round(noOrphans * 15);
     const noDeadLinksScore = pageCount === 0 ? 0 : Math.round(noDeadLinks * 10);
     const brainScore = embedCoverageScore + linkDensityScore + timelineCoverageScore + noOrphansScore + noDeadLinksScore;

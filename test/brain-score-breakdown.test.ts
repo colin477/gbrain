@@ -70,6 +70,32 @@ describe('Bug 11 — brain_score breakdown sums to total', () => {
   });
 });
 
+describe('timeline subscore uses entity_pages denominator, not total pageCount', () => {
+  test('timeline_coverage_score reflects entity coverage and is not diluted by non-entity pages', async () => {
+    // Two entity pages (companies); exactly one carries a timeline entry.
+    await engine.putPage('co-a', { type: 'company', title: 'Co A', compiled_truth: 'a', frontmatter: {} });
+    await engine.putPage('co-b', { type: 'company', title: 'Co B', compiled_truth: 'b', frontmatter: {} });
+    await engine.addTimelineEntry('co-a', { date: '2026-01-01', summary: 'founded', source: 'test' });
+
+    // 30 non-entity pages with NO timeline. Under the pre-fix formula
+    // (pages_with_timeline / total pageCount) these dilute the score to
+    // round((1/32) * 15) = 0; under the fix (entity_pages denominator) they
+    // are irrelevant — only the 2 companies count toward timeline coverage.
+    for (let i = 0; i < 30; i++) {
+      await engine.putPage(`note-${i}`, { type: 'note', title: `n${i}`, compiled_truth: 'x', frontmatter: {} });
+    }
+
+    const h = await engine.getHealth();
+    // Entity coverage = 1 of 2 companies = 0.5 → round(0.5 * 15) = 8.
+    expect(h.timeline_coverage).toBeCloseTo(0.5, 5);
+    expect(h.timeline_coverage_score).toBe(8);
+    // The bug, guarded directly: the total-page denominator would score 0/15.
+    expect(h.timeline_coverage_score).toBeGreaterThan(0);
+    // Invariant: score is exactly round(entity_coverage * 15).
+    expect(h.timeline_coverage_score).toBe(Math.round(h.timeline_coverage * 15));
+  });
+});
+
 describe('Bug 11 — orphan_pages is "no inbound links"', () => {
   test('a page with outbound-only links is NOT an orphan', async () => {
     // Hub page: links out to three others, but nothing links back to it.

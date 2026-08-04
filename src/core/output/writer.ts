@@ -18,7 +18,7 @@
  */
 
 import type { BrainEngine } from '../engine.ts';
-import type { PageType, TimelineInput } from '../types.ts';
+import type { StoredPageType, TimelineInput } from '../types.ts';
 import type { ResolverContext } from '../resolvers/interface.ts';
 import { SlugRegistry } from './slug-registry.ts';
 
@@ -43,7 +43,7 @@ export interface EntityInput {
   /** Desired slug (e.g. "people/alice-smith"). May be disambiguated. */
   desiredSlug: string;
   displayName: string;
-  type: PageType;
+  type: StoredPageType;
   compiledTruth: string;
   timeline?: string;
   frontmatter?: Record<string, unknown>;
@@ -88,7 +88,7 @@ export interface PageValidator {
 
 export interface PageValidationContext {
   slug: string;
-  type: PageType;
+  type: StoredPageType;
   compiledTruth: string;
   timeline: string;
   frontmatter: Record<string, unknown>;

@@ -1,5 +1,5 @@
 import matter from 'gray-matter';
-import type { PageType } from './types.ts';
+import type { PageType, StoredPageType } from './types.ts';
 import { slugifyPath } from './sync.ts';
 
 export type ParseValidationCode =
@@ -319,7 +319,7 @@ export function serializeMarkdown(
   frontmatter: Record<string, unknown>,
   compiled_truth: string,
   timeline: string,
-  meta: { type: PageType; title: string; tags: string[] },
+  meta: { type: StoredPageType; title: string; tags: string[] },
 ): string {
   // Build full frontmatter including type, title, tags
   const fullFrontmatter: Record<string, unknown> = {

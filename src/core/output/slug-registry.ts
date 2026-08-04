@@ -16,7 +16,7 @@
  */
 
 import type { BrainEngine } from '../engine.ts';
-import type { PageType } from '../types.ts';
+import type { StoredPageType } from '../types.ts';
 
 export interface CreateSlugInput {
   /**
@@ -27,7 +27,7 @@ export interface CreateSlugInput {
   /** Display name the user sees (for error messages). */
   displayName: string;
   /** Entity type — used to scope conflict detection to the same dir. */
-  type: PageType;
+  type: StoredPageType;
   /**
    * Disambiguator strategy when there's a collision:
    *   - 'append-numeric' (default): alice-smith → alice-smith-2

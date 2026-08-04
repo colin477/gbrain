@@ -34,7 +34,7 @@
  * groups by reason).
  */
 
-import type { PageType } from '../types.ts';
+import type { PageType, StoredPageType } from '../types.ts';
 
 export type EligibilityResult = { ok: true } | { ok: false; reason: string };
 
@@ -54,7 +54,7 @@ const MIN_BODY_CHARS = 80;
 
 export function isFactsBackstopEligible(
   slug: string,
-  parsed: { type: PageType; compiled_truth: string; frontmatter: Record<string, unknown> } | null | undefined,
+  parsed: { type: StoredPageType; compiled_truth: string; frontmatter: Record<string, unknown> } | null | undefined,
 ): EligibilityResult {
   if (!parsed) return { ok: false, reason: 'no_parsed_page' };
   if (slug.startsWith('wiki/agents/')) return { ok: false, reason: 'subagent_namespace' };
@@ -65,7 +65,10 @@ export function isFactsBackstopEligible(
   const body = (parsed.compiled_truth ?? '').trim();
   if (body.length < MIN_BODY_CHARS) return { ok: false, reason: 'too_short' };
 
-  const typeOk = ELIGIBLE_TYPES.includes(parsed.type);
+  // ELIGIBLE_TYPES is a canonical PageType[]; parsed.type is whatever the row
+  // actually stores. Widen for the membership test rather than narrowing the
+  // stored value, which would be a lie.
+  const typeOk = (ELIGIBLE_TYPES as readonly string[]).includes(parsed.type);
   const slugOk = RESCUE_SLUG_PREFIXES.some(p => slug.startsWith(p));
   if (!typeOk && !slugOk) return { ok: false, reason: `kind:${parsed.type}` };
 

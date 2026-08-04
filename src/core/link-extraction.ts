@@ -12,7 +12,7 @@
  */
 
 import type { BrainEngine } from './engine.ts';
-import type { PageType } from './types.ts';
+import type { PageType, StoredPageType } from './types.ts';
 
 // ─── Entity references ──────────────────────────────────────────
 
@@ -359,7 +359,7 @@ export async function extractPageLinks(
   slug: string,
   content: string,
   frontmatter: Record<string, unknown>,
-  pageType: PageType,
+  pageType: StoredPageType,
   resolver: SlugResolver,
 ): Promise<PageLinksResult> {
   const candidates: LinkCandidate[] = [];
@@ -525,7 +525,7 @@ const EMPLOYEE_ROLE_RE = /\b(?:is an? (?:senior|staff|principal|lead|backend|fro
  * lists portfolio companies without repeating the investment verb each time
  * ("Her current board seats reflect her portfolio: [Co A], [Co B], [Co C]").
  */
-export function inferLinkType(pageType: PageType, context: string, globalContext?: string, targetSlug?: string): string {
+export function inferLinkType(pageType: StoredPageType, context: string, globalContext?: string, targetSlug?: string): string {
   if (pageType === 'media') {
     return 'mentions';
   }
@@ -759,7 +759,7 @@ export interface FrontmatterExtractResult {
  */
 export async function extractFrontmatterLinks(
   slug: string,
-  pageType: PageType,
+  pageType: StoredPageType,
   frontmatter: Record<string, unknown>,
   resolver: SlugResolver,
 ): Promise<FrontmatterExtractResult> {

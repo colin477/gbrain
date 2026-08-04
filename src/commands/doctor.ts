@@ -1,4 +1,5 @@
 import type { BrainEngine } from '../core/engine.ts';
+import { ALL_PAGE_TYPES } from '../core/types.ts';
 import * as db from '../core/db.ts';
 import { LATEST_VERSION, getIdleBlockers } from '../core/migrate.ts';
 import { checkResolvable } from '../core/check-resolvable.ts';
@@ -142,6 +143,88 @@ export async function whoknowsHealthCheck(_engine: BrainEngine): Promise<Check> 
       name: 'whoknows_health',
       status: 'warn',
       message: `Could not check whoknows fixture: ${msg}`,
+    };
+  }
+}
+
+/**
+ * page_type_drift — surface page types that exist in the data but not in the
+ * canonical `PageType` union.
+ *
+ * `pages.type` is TEXT with no enum and no CHECK, so any string persists. That
+ * is deliberate (see StoredPageType in core/types.ts), but it means the union
+ * silently stops describing reality and nothing reports it. Census 2026-08-04:
+ * 76 distinct types in use, 66 outside the union, 3,031 pages (15.4%).
+ *
+ * The threshold is what makes this useful rather than noisy. One-off types
+ * (a single page typed `crontab` by an ad-hoc write) are accidents and are
+ * counted but not escalated. A type crossing MIN_PAGES_TO_ESCALATE is a de
+ * facto part of the taxonomy and should either be added to `PageType` +
+ * `ALL_PAGE_TYPES`, or its pages retyped.
+ *
+ * warn, never fail: unknown types break nothing at runtime today, and a
+ * doctor that fails on a benign condition trains people to ignore it.
+ */
+export const PAGE_TYPE_DRIFT_MIN_PAGES = 5;
+
+export async function pageTypeDriftCheck(engine: BrainEngine): Promise<Check> {
+  try {
+    const rows = await engine.executeRaw<{ type: string; n: string | number }>(
+      `SELECT type, count(*)::int AS n
+         FROM pages
+        WHERE deleted_at IS NULL
+        GROUP BY type
+        ORDER BY count(*) DESC`,
+    );
+    if (rows.length === 0) {
+      return { name: 'page_type_drift', status: 'ok', message: 'No pages yet' };
+    }
+
+    const known = new Set<string>(ALL_PAGE_TYPES as readonly string[]);
+    const unknown = rows
+      .map(r => ({ type: r.type, n: Number(r.n) }))
+      .filter(r => !known.has(r.type));
+
+    if (unknown.length === 0) {
+      return {
+        name: 'page_type_drift',
+        status: 'ok',
+        message: `${rows.length} page type(s) in use, all canonical`,
+      };
+    }
+
+    const unknownPages = unknown.reduce((a, r) => a + r.n, 0);
+    const total = rows.reduce((a, r) => a + Number(r.n), 0);
+    const escalate = unknown.filter(r => r.n >= PAGE_TYPE_DRIFT_MIN_PAGES);
+    const pct = ((unknownPages / total) * 100).toFixed(1);
+
+    if (escalate.length === 0) {
+      return {
+        name: 'page_type_drift',
+        status: 'ok',
+        message: `${unknown.length} non-canonical type(s), all under ${PAGE_TYPE_DRIFT_MIN_PAGES} pages (${unknownPages}/${total}, ${pct}%) — one-offs, not taxonomy`,
+      };
+    }
+
+    const top = escalate
+      .slice(0, 8)
+      .map(r => `${r.type} (${r.n})`)
+      .join(', ');
+    const more = escalate.length > 8 ? `, +${escalate.length - 8} more` : '';
+    return {
+      name: 'page_type_drift',
+      status: 'warn',
+      message:
+        `${escalate.length} page type(s) outside PageType with >=${PAGE_TYPE_DRIFT_MIN_PAGES} pages: ${top}${more}. ` +
+        `${unknownPages}/${total} pages (${pct}%) on non-canonical types. ` +
+        `Fix: add to PageType + ALL_PAGE_TYPES in src/core/types.ts, or retype the pages.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      name: 'page_type_drift',
+      status: 'warn',
+      message: `Could not check page type drift: ${msg}`,
     };
   }
 }
@@ -1662,6 +1745,12 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
   // directly rather than the full `runDoctor` pipeline (codex review #7).
   progress.heartbeat('takes_weight_grid');
   checks.push(await takesWeightGridCheck(engine));
+
+  // page_type_drift — the union in core/types.ts describes a taxonomy the
+  // data has outgrown, and nothing reported it until someone grepped. This
+  // makes the gap visible on every doctor run instead.
+  progress.heartbeat('page_type_drift');
+  checks.push(await pageTypeDriftCheck(engine));
 
   // v0.33: whoknows_health — fixture presence + row count. The eval
   // gate itself runs via `gbrain eval whoknows`; this check is the

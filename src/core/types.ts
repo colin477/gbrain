@@ -13,6 +13,30 @@
 export type PageType = 'person' | 'company' | 'deal' | 'yc' | 'civic' | 'project' | 'concept' | 'source' | 'media' | 'writing' | 'analysis' | 'guide' | 'hardware' | 'architecture' | 'meeting' | 'note' | 'email' | 'slack' | 'calendar-event' | 'code' | 'image' | 'synthesis';
 
 /**
+ * What the `pages.type` COLUMN can actually hold.
+ *
+ * `pages.type` is `TEXT NOT NULL` (schema-embedded.ts) with no enum and no
+ * CHECK on its value — arbitrary strings have always been persistable, and
+ * are persisted in practice. Census 2026-08-04 over 19,739 pages: 76 distinct
+ * type strings in use, of which 66 fall outside `PageType`, covering 3,031
+ * pages (15.4%). The largest are `attachment` (1,483), `calendar-day` (924),
+ * `trend-digest` (188), `decision` (67), `document` (60), `reference` (48)
+ * and `ticket` (42). In the other direction, 12 of PageType's 22 values have
+ * zero pages — they describe an upstream taxonomy this brain never adopted.
+ *
+ * `PageType` is deliberately left CLOSED so exhaustive `switch` + assertNever
+ * keeps compiling and scripts/check-pagetype-exhaustive.sh keeps meaning
+ * something. `StoredPageType` is the honest type for anything that has
+ * round-tripped through the database. The `(string & {})` intersection is the
+ * standard TypeScript idiom for "any string, but keep autocompleting the
+ * known ones".
+ *
+ * Use `PageType` when enumerating or branching on canonical types.
+ * Use `StoredPageType` for a value that came out of, or is going into, a row.
+ */
+export type StoredPageType = PageType | (string & {});
+
+/**
  * Canonical list of every PageType value. Kept in sync with the union above.
  * Used by the v0.27.1 page-type-exhaustive contract test to walk every value
  * through public surfaces (serialize, slug registry, frontmatter validate)
@@ -50,7 +74,7 @@ export function assertNever(x: never): never {
 export interface Page {
   id: number;
   slug: string;
-  type: PageType;
+  type: StoredPageType;
   title: string;
   compiled_truth: string;
   timeline: string;
@@ -120,7 +144,7 @@ export type EffectiveDateSource =
 export type PageKind = 'markdown' | 'code' | 'image';
 
 export interface PageInput {
-  type: PageType;
+  type: StoredPageType;
   title: string;
   compiled_truth: string;
   timeline?: string;
@@ -162,7 +186,7 @@ export interface PageInput {
 }
 
 export interface PageFilters {
-  type?: PageType;
+  type?: StoredPageType;
   tag?: string;
   limit?: number;
   offset?: number;
@@ -241,7 +265,7 @@ export interface SalienceResult {
   slug: string;
   source_id: string;
   title: string;
-  type: PageType;
+  type: StoredPageType;
   updated_at: Date;
   emotional_weight: number;
   take_count: number;
@@ -386,7 +410,7 @@ export interface SearchResult {
   slug: string;
   page_id: number;
   title: string;
-  type: PageType;
+  type: StoredPageType;
   chunk_text: string;
   chunk_source: 'compiled_truth' | 'timeline';
   chunk_id: number;
@@ -404,7 +428,7 @@ export interface SearchResult {
 export interface SearchOpts {
   limit?: number;
   offset?: number;
-  type?: PageType;
+  type?: StoredPageType;
   /**
    * v0.33: multi-type filter. When set, search results are filtered to
    * pages whose `type` is in this list, pushed to SQL via
@@ -596,7 +620,7 @@ export interface Link {
 export interface GraphNode {
   slug: string;
   title: string;
-  type: PageType;
+  type: StoredPageType;
   depth: number;
   links: { to_slug: string; link_type: string }[];
 }

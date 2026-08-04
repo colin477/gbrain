@@ -39,7 +39,7 @@
 
 import type { BrainEngine, FactInsertStatus, NewFact } from '../engine.ts';
 import { isFactsBackstopEligible } from './eligibility.ts';
-import type { PageType } from '../types.ts';
+import type { StoredPageType } from '../types.ts';
 
 export interface FactsBackstopCtx {
   engine: BrainEngine;
@@ -91,7 +91,7 @@ export type FactsBackstopResult =
 
 interface ParsedPageInput {
   slug: string;
-  type: PageType;
+  type: StoredPageType;
   compiled_truth: string;
   frontmatter: Record<string, unknown>;
 }

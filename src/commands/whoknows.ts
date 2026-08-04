@@ -36,7 +36,7 @@
  */
 
 import type { BrainEngine } from '../core/engine.ts';
-import type { PageType, SearchResult } from '../core/types.ts';
+import type { PageType, SearchResult, StoredPageType } from '../core/types.ts';
 import { hybridSearch } from '../core/search/hybrid.ts';
 import { loadConfig, isThinClient } from '../core/config.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
@@ -58,7 +58,7 @@ export interface WhoknowsResult {
   slug: string;
   source_id: string;
   title: string;
-  type: PageType;
+  type: StoredPageType;
   score: number;
   factors: {
     expertise: number;
@@ -90,7 +90,7 @@ export function rankCandidates(
     slug: string;
     source_id: string;
     title: string;
-    type: PageType;
+    type: StoredPageType;
     raw_match: number;
     days_since_effective: number | null;
     salience_raw: number | null;

@@ -14,7 +14,7 @@ import { join } from 'path';
 
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
-import { runPostWriteLint, isLintOnPutPageEnabled } from '../src/core/output/post-write.ts';
+import { runPostWriteLint, isLintOnPutPageEnabled, getCitationExemptTypes } from '../src/core/output/post-write.ts';
 
 let engine: BrainEngine;
 let dbDir: string;
@@ -126,5 +126,123 @@ describe('runPostWriteLint', () => {
     const r = await runPostWriteLint(engine, 'people/clean', { noLog: true });
     expect(r.ran).toBe(true);
     expect(r.findings).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Citation scoping by page type
+//
+// The citation validator asserts provenance. Operational/authored pages have
+// no external source to cite and failed by construction, producing 96% of all
+// soak findings (1,321 of 1,375 across 250 events, measured 2026-08-04).
+// They are exempt; everything else — entity and research pages especially —
+// keeps enforcement.
+// ---------------------------------------------------------------------------
+
+describe('citation scoping by page type', () => {
+  beforeEach(async () => {
+    await reset();
+    await engine.executeRaw(`DELETE FROM config WHERE key = 'writer.citation_exempt_types'`);
+  });
+
+  const UNCITED = 'The pipeline has 43,457 rows and the unique index was verified valid.';
+
+  test('exempt type (project) → no citation findings', async () => {
+    await engine.putPage('projects/comms', {
+      type: 'project', title: 'Comms', compiled_truth: UNCITED, frontmatter: {},
+    });
+    const r = await runPostWriteLint(engine, 'projects/comms', { force: true, noLog: true });
+    expect(r.ran).toBe(true);
+    expect(r.findings.filter(f => f.validator === 'citation')).toEqual([]);
+  });
+
+  test('exempt type (decision) → no citation findings', async () => {
+    // NOTE: 'decision' is deliberately cast. The PageType union in
+    // src/core/types.ts carries 22 values and does NOT include 'decision',
+    // 'reference' or 'ticket' — but production stores 78 distinct type
+    // strings, including 67 'decision' pages. Pages are persisted with
+    // arbitrary type strings, so the exemption matches on the stored value.
+    // Casting here keeps the test honest about the real-world case that
+    // motivated this scoping rather than substituting a union-legal type.
+    await engine.putPage('decisions/adr-1', {
+      type: 'decision' as any, title: 'ADR 1', compiled_truth: UNCITED, frontmatter: {},
+    });
+    const r = await runPostWriteLint(engine, 'decisions/adr-1', { force: true, noLog: true });
+    expect(r.findings.filter(f => f.validator === 'citation')).toEqual([]);
+  });
+
+  test('exempt non-union type strings (reference, ticket) are honoured at runtime', async () => {
+    for (const [slug, type] of [['reference/x', 'reference'], ['tickets/x', 'ticket']]) {
+      await engine.putPage(slug, {
+        type: type as any, title: 'X', compiled_truth: UNCITED, frontmatter: {},
+      });
+      const r = await runPostWriteLint(engine, slug, { force: true, noLog: true });
+      expect(r.findings.filter(f => f.validator === 'citation')).toEqual([]);
+    }
+  });
+
+  test('REGRESSION GUARD: entity pages still require citations', async () => {
+    // person/company are researched, not authored — provenance still matters.
+    for (const [slug, type] of [['people/z', 'person'], ['companies/z', 'company']] as const) {
+      await engine.putPage(slug, {
+        type, title: 'Z',
+        compiled_truth: 'Z raised $5M in Series A from Sequoia without citation.',
+        frontmatter: {},
+      });
+      const r = await runPostWriteLint(engine, slug, { force: true, noLog: true });
+      expect(r.findings.some(f => f.validator === 'citation')).toBe(true);
+    }
+  });
+
+  test('imported type (source) still requires citations', async () => {
+    await engine.putPage('sources/article', {
+      type: 'source', title: 'Article', compiled_truth: UNCITED, frontmatter: {},
+    });
+    const r = await runPostWriteLint(engine, 'sources/article', { force: true, noLog: true });
+    expect(r.findings.some(f => f.validator === 'citation')).toBe(true);
+  });
+
+  test('structural validators still run on exempt types', async () => {
+    // The exemption must lift ONLY citation — integrity checks are
+    // type-independent and must survive.
+    await engine.putPage('projects/structural', {
+      type: 'project', title: 'S', compiled_truth: UNCITED, frontmatter: {},
+    });
+    const r = await runPostWriteLint(engine, 'projects/structural', { force: true, noLog: true });
+    expect(r.ran).toBe(true);
+    expect(r.findings.every(f => f.validator !== 'citation')).toBe(true);
+  });
+
+  test('config override replaces the default set entirely', async () => {
+    await engine.setConfig('writer.citation_exempt_types', 'person');
+    // person now exempt...
+    await engine.putPage('people/override', {
+      type: 'person', title: 'O', compiled_truth: UNCITED, frontmatter: {},
+    });
+    const rp = await runPostWriteLint(engine, 'people/override', { force: true, noLog: true });
+    expect(rp.findings.filter(f => f.validator === 'citation')).toEqual([]);
+    // ...and project is NOT, because the override replaces rather than merges.
+    await engine.putPage('projects/override', {
+      type: 'project', title: 'O', compiled_truth: UNCITED, frontmatter: {},
+    });
+    const rj = await runPostWriteLint(engine, 'projects/override', { force: true, noLog: true });
+    expect(rj.findings.some(f => f.validator === 'citation')).toBe(true);
+  });
+
+  test('empty config value restores enforcement everywhere', async () => {
+    await engine.setConfig('writer.citation_exempt_types', '');
+    await engine.putPage('projects/strict', {
+      type: 'project', title: 'Strict', compiled_truth: UNCITED, frontmatter: {},
+    });
+    const r = await runPostWriteLint(engine, 'projects/strict', { force: true, noLog: true });
+    expect(r.findings.some(f => f.validator === 'citation')).toBe(true);
+  });
+
+  test('getCitationExemptTypes defaults when config unset', async () => {
+    const s = await getCitationExemptTypes(engine);
+    expect(s.has('project')).toBe(true);
+    expect(s.has('decision')).toBe(true);
+    expect(s.has('person')).toBe(false);
+    expect(s.has('source')).toBe(false);
   });
 });

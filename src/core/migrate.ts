@@ -6029,6 +6029,133 @@ async function runMigrationSQL(
 }
 
 /**
+ * FORK PATCH F1 (PAI, 2026-08-17) — handler migrations were unprotected.
+ *
+ * `applyOneMigration` gated the timeout+retry path on `if (sql)`, so
+ * handler-only migrations (`sql: ''`) never reached `runMigrationSQLWithRetry`.
+ * Consequences, all silent:
+ *   - no 600s `statement_timeout` override → the handler's DDL runs under
+ *     Supabase's ~2min server default;
+ *   - no retry on 57014 / connection reset;
+ *   - the migration's own `transaction: false` flag is inert, because nothing
+ *     consulted it on this path.
+ *
+ * Affects v91, 96, 97, 103, 104, 112, 123. Six of the seven issue
+ * `CREATE INDEX CONCURRENTLY`; v103 builds `content_chunks_stale_idx` on
+ * `content_chunks` — the largest table in this brain — and is expected to
+ * exceed the default timeout.
+ *
+ * Fix: run the handler on a reserved backend carrying the same 600s override
+ * that `runMigrationSQL` applies to SQL migrations. Handlers receive `engine`,
+ * not a connection, so we hand them a prototype-delegating proxy whose
+ * `runMigration`/`executeRaw` route to the reserved connection. Those are the
+ * only two methods the seven affected handlers use — including inside the
+ * `dropInvalidConcurrentIndex` helper, which is passed the same proxy — so
+ * every statement they issue inherits the override. All other engine methods
+ * delegate to the real engine untouched.
+ *
+ * `withReservedConnection` yields a bare connection, not a transaction, so
+ * `CREATE INDEX CONCURRENTLY` remains legal (same primitive `runMigrationSQL`
+ * uses for its `transaction: false` branch).
+ */
+async function runMigrationHandler(engine: BrainEngine, m: Migration): Promise<void> {
+  if (!m.handler) return;
+
+  // PGLite is in-process: no server-side statement_timeout to override and no
+  // reserved-backend concept. Run the handler directly, as upstream does.
+  if (engine.kind !== 'postgres') {
+    await m.handler(engine);
+    return;
+  }
+
+  await engine.withReservedConnection(async (conn) => {
+    try {
+      await conn.executeRaw("SET statement_timeout = '600000'");
+    } catch {
+      // Non-fatal, and deliberately mirrors runMigrationSQL: some managed
+      // Postgres restricts this GUC. Falling through means the handler runs
+      // with the server default — i.e. exactly upstream's behaviour.
+    }
+
+    // Prototype-delegating proxy: own props shadow the two hot methods; every
+    // other member resolves through the chain to `engine`, with `this` bound to
+    // the proxy so internal `this.executeRaw` calls also land on the reserved
+    // connection (desirable — it keeps the whole handler on one session).
+    const scoped: BrainEngine = Object.create(engine, {
+      runMigration: {
+        value: async (_version: number, sqlStr: string): Promise<void> => {
+          await conn.executeRaw(sqlStr);
+        },
+      },
+      executeRaw: {
+        value: <T = Record<string, unknown>>(
+          sqlStr: string,
+          params?: unknown[],
+        ): Promise<T[]> => conn.executeRaw<T>(sqlStr, params),
+      },
+    });
+
+    await m.handler!(scoped);
+  });
+}
+
+/**
+ * FORK PATCH F1 (PAI, 2026-08-17) — retry wrapper for handler migrations.
+ *
+ * Mirrors `runMigrationSQLWithRetry`: 3 attempts, 5s/15s/45s backoff, retry
+ * only on statement_timeout (57014) or connection reset, blocker diagnostics
+ * before each retry, and the same `MigrationRetryExhausted` envelope on
+ * exhaustion so the caller's existing 57014 reporting fires unchanged.
+ *
+ * Each retry re-runs the WHOLE handler rather than resuming mid-way. That is
+ * load-bearing, not lazy: the six CONCURRENTLY handlers all call
+ * `dropInvalidConcurrentIndex` before building, so a fresh run first clears the
+ * invalid remnant left by the attempt that timed out. Resuming past that step
+ * would build on top of an invalid index. All seven handlers are idempotent
+ * (`CREATE {TABLE,INDEX} IF NOT EXISTS` throughout), so re-running is safe.
+ */
+async function runMigrationHandlerWithRetry(engine: BrainEngine, m: Migration): Promise<void> {
+  if (!m.handler) return;
+
+  const fastBackoff = process.env.GBRAIN_MIGRATE_BACKOFF_MS;
+  const backoffs = fastBackoff !== undefined
+    ? [parseInt(fastBackoff, 10) || 0, parseInt(fastBackoff, 10) || 0, parseInt(fastBackoff, 10) || 0]
+    : [5000, 15000, 45000];
+  let lastErr: Error | null = null;
+  let lastBlockers: IdleBlocker[] = [];
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (attempt > 0) {
+        lastBlockers = await getIdleBlockers(engine);
+        if (lastBlockers.length > 0) {
+          console.warn(`  [retry ${attempt}/3] ${lastBlockers.length} idle-in-transaction blocker(s):`);
+          for (const b of lastBlockers) {
+            console.warn(`    PID ${b.pid} idle since ${b.query_start} — ${b.query.slice(0, 80)}`);
+          }
+        }
+      }
+      await runMigrationHandler(engine, m);
+      return;
+    } catch (err: unknown) {
+      lastErr = err instanceof Error ? err : new Error(String(err));
+      const retryable = isStatementTimeoutError(err) || isRetryableConnError(err);
+      if (!retryable || attempt === 2) {
+        if (retryable) {
+          lastBlockers = await getIdleBlockers(engine);
+          throw new MigrationRetryExhausted(m.version, m.name, attempt + 1, lastBlockers, lastErr);
+        }
+        throw err;
+      }
+      const delay = backoffs[attempt];
+      console.warn(`  [retry ${attempt + 1}/3] ${m.name} (handler) hit ${lastErr.message.slice(0, 80)}; retrying in ${delay}ms`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  if (lastErr) throw lastErr;
+}
+
+/**
  * Cheap probe: does this engine have schema migrations pending?
  *
  * Reads the `version` config row in a single round-trip (no schema replay,
@@ -6274,11 +6401,20 @@ async function applyOneMigration(engine: BrainEngine, m: Migration): Promise<voi
     // Pick SQL: engine-specific `sqlFor` wins over engine-agnostic `sql`.
     const sql = m.sqlFor?.[engine.kind] ?? m.sql;
 
-    if (sql) {
+    // FORK PATCH F1: SQL and handler now share one diagnostic path. Upstream
+    // wrapped only the SQL branch, so a handler timeout printed a bare stack
+    // with no blocker PID and no recovery steps — on exactly the migrations
+    // (v103) most likely to time out.
+    if (sql || m.handler) {
       try {
-        // v0.30.1: retry wrapper handles statement_timeout + conn-reset
-        // across 3 attempts (5s/15s/45s). Other errors throw immediately.
-        await runMigrationSQLWithRetry(engine, m, sql);
+        if (sql) {
+          // v0.30.1: retry wrapper handles statement_timeout + conn-reset
+          // across 3 attempts (5s/15s/45s). Other errors throw immediately.
+          await runMigrationSQLWithRetry(engine, m, sql);
+        }
+        // FORK PATCH F1: handler gets the same 600s override + retry policy.
+        // Runs after SQL, preserving upstream ordering.
+        await runMigrationHandlerWithRetry(engine, m);
       } catch (err: unknown) {
         // Actionable diagnostics for statement timeout (Postgres error 57014).
         // Shape matches the 4-part error standard (what / why / fix / verify).
@@ -6312,11 +6448,6 @@ async function applyOneMigration(engine: BrainEngine, m: Migration): Promise<voi
       }
     }
 
-    // Application-level handler (runs outside transaction for flexibility)
-    if (m.handler) {
-      await m.handler(engine);
-    }
-
     // v0.30.1 (D6): post-condition probe. If a verify hook is declared, run
     // it before bumping config.version. When verify returns false, check
     // idempotent — if true, log + retry the same migration once; if false,
@@ -6328,7 +6459,10 @@ async function applyOneMigration(engine: BrainEngine, m: Migration): Promise<voi
         if (idempotent) {
           console.warn(`  [${m.version}] ⚠️  verify failed; re-running idempotent migration once`);
           if (sql) await runMigrationSQLWithRetry(engine, m, sql);
-          if (m.handler) await m.handler(engine);
+          // FORK PATCH F1: the verify-retry path re-ran the handler bare too,
+          // so the one path explicitly meant to recover from a bad outcome was
+          // itself unprotected.
+          await runMigrationHandlerWithRetry(engine, m);
           // Best-effort: don't double-throw if second run still fails verify.
           // Operator's next run of doctor will re-detect drift.
         } else {
